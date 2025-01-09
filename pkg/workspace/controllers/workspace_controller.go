@@ -34,7 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/karpenter/pkg/apis/v1beta1"
+	karpenterv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 
 	"github.com/kaito-project/kaito/pkg/utils"
 	"github.com/kaito-project/kaito/pkg/utils/consts"
@@ -759,7 +759,7 @@ func (c *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&batchv1.Job{}).
-		Watches(&v1beta1.NodeClaim{}, c.watchNodeClaims()).
+		Watches(&karpenterv1.NodeClaim{}, c.watchNodeClaims()).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 5})
 
 	return builder.Complete(c)
@@ -769,7 +769,7 @@ func (c *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (c *WorkspaceReconciler) watchNodeClaims() handler.EventHandler {
 	return handler.EnqueueRequestsFromMapFunc(
 		func(ctx context.Context, o client.Object) []reconcile.Request {
-			nodeClaimObj := o.(*v1beta1.NodeClaim)
+			nodeClaimObj := o.(*karpenterv1.NodeClaim)
 			name, ok := nodeClaimObj.Labels[kaitov1alpha1.LabelWorkspaceName]
 			if !ok {
 				return nil
