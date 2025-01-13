@@ -6,19 +6,19 @@ package utils
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"sort"
 	"strings"
 
-	"github.com/kaito-project/kaito/pkg/sku"
-	"github.com/kaito-project/kaito/pkg/utils/consts"
 	"gopkg.in/yaml.v2"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"knative.dev/pkg/apis"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/kaito-project/kaito/pkg/sku"
+	"github.com/kaito-project/kaito/pkg/utils/consts"
 )
 
 func Contains(s []string, e string) bool {
@@ -95,7 +95,7 @@ func GetReleaseNamespace() (string, error) {
 	namespaceFilePath := "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
 	// Attempt to read the namespace from the file
-	if content, err := ioutil.ReadFile(namespaceFilePath); err == nil {
+	if content, err := os.ReadFile(namespaceFilePath); err == nil {
 		return string(content), nil
 	}
 
