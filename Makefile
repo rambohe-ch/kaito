@@ -560,7 +560,7 @@ $(ENVTEST): $(LOCALBIN)
 
 .PHONY: vet
 vet: ## Run go vet against code.
-	go vet ./...
+	go vet $(shell go list ./... | grep -v /website/build/)
 
 .PHONY: lint
 lint: $(GOLANGCI_LINT) ## Run golangci-lint against code.

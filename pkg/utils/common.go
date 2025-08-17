@@ -346,3 +346,13 @@ func DedupVolumeMounts(mounts []corev1.VolumeMount) []corev1.VolumeMount {
 
 	return result
 }
+
+// IsNodeReady checks if a Kubernetes node is in ready state
+func IsNodeReady(node *corev1.Node) bool {
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == corev1.NodeReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
