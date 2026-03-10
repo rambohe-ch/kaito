@@ -39,8 +39,8 @@ securityContext:
 featureGates:
   vLLM: true
   disableNodeAutoProvisioning: false
-  gatewayAPIInferenceExtension: false
-  enableInferenceSetController: false
+  gatewayAPIInferenceExtension: true
+  enableInferenceSetController: true
 defaultNodeImageFamily: ""
 nvidiaDevicePlugin:
   enabled: true
