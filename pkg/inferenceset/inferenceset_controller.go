@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	helmv2 "github.com/fluxcd/helm-controller/api/v2"
@@ -25,10 +26,12 @@ import (
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -47,6 +50,7 @@ import (
 	"github.com/kaito-project/kaito/pkg/utils"
 	"github.com/kaito-project/kaito/pkg/utils/consts"
 	"github.com/kaito-project/kaito/pkg/utils/inferenceset"
+	"github.com/kaito-project/kaito/pkg/utils/nodeclaim"
 	"github.com/kaito-project/kaito/pkg/utils/resources"
 	"github.com/kaito-project/kaito/pkg/utils/workspace"
 	"github.com/kaito-project/kaito/pkg/workspace/controllers"
@@ -196,6 +200,143 @@ func aggregateBenchmarkResults(workspaces []kaitov1beta1.Workspace) (totalTPM fl
 		}
 	}
 	return
+}
+
+// workspacePrerequisiteConditions are the Workspace conditions that must be
+// True before the inference workload can become ready: the nodes, the custom
+// model configuration and the model weights. They progress independently of
+// each other, so a failure of one is not a consequence of another still
+// progressing. ResourceReady comes first because it summarizes the nodes and
+// the model weights; NodeClaimReady and NodesReady follow because ResourceReady
+// reports ModelMirrorNotReady while the model weights are not ready, which
+// would otherwise hide a node provisioning failure.
+var workspacePrerequisiteConditions = []kaitov1beta1.ConditionType{
+	kaitov1beta1.ConditionTypeResourceStatus,
+	kaitov1beta1.ConditionTypeNodeClaimStatus,
+	kaitov1beta1.ConditionTypeNodeStatus,
+	kaitov1beta1.WorkspaceConditionTypeModelConfigReady,
+	kaitov1beta1.WorkspaceConditionTypeModelMirrorReady,
+}
+
+// workspaceProgressReasons are the reasons a not-ready Workspace reports on
+// its prerequisite and InferenceReady conditions while the replica is still
+// progressing. Any other reason of a False condition reports a failure: the
+// failure reasons are not a closed set, they include the reasons recorded by
+// Karpenter, its cloud provider and the inference pods.
+var workspaceProgressReasons = sets.New(
+	// ResourceReady, NodeClaimReady and NodesReady, written by the node provisioners.
+	"workspaceResourceStatusNotReady",
+	nodeclaim.NodeClaimNotReadyReason,
+	"NodeNotReady",
+	"NodePluginsNotReady",
+	// ResourceReady while the model weights are not ready; ModelMirrorReady
+	// carries their own reason.
+	"ModelMirrorNotReady",
+	// ModelMirrorReady while the download has not completed or a previous
+	// ModelMirror is being torn down before it is recreated.
+	"ModelMirrorPending",
+	"ModelMirrorDeleting",
+	// InferenceReady while no pod failure is observed.
+	"WorkspaceInferenceStatusPending",
+)
+
+// maxReportedNotReadyWorkspaces bounds the not-ready replicas whose cause is
+// listed in the InferenceSetReady message.
+const maxReportedNotReadyWorkspaces = 3
+
+// workspaceRootCause returns why the replica is not ready and whether that is
+// a failure rather than progress. A failing prerequisite condition is the root
+// cause; otherwise the first False prerequisite condition, which is progress.
+// InferenceReady is only the root cause once every prerequisite is ready, as
+// its failures (e.g. Unschedulable pods) can be a consequence of a
+// prerequisite still progressing.
+func workspaceRootCause(ws *kaitov1beta1.Workspace) (cause *metav1.Condition, failed bool) {
+	notReady := func(condType kaitov1beta1.ConditionType) *metav1.Condition {
+		cond := meta.FindStatusCondition(ws.Status.Conditions, string(condType))
+		if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason == "" {
+			return nil
+		}
+		return cond
+	}
+	for _, condType := range workspacePrerequisiteConditions {
+		cond := notReady(condType)
+		if cond == nil {
+			continue
+		}
+		if !workspaceProgressReasons.Has(cond.Reason) {
+			return cond, true
+		}
+		if cause == nil {
+			cause = cond
+		}
+	}
+	if cause != nil {
+		return cause, false
+	}
+	if cond := notReady(kaitov1beta1.WorkspaceConditionTypeInferenceStatus); cond != nil {
+		return cond, !workspaceProgressReasons.Has(cond.Reason)
+	}
+	return nil, false
+}
+
+// notReadyCondition builds the InferenceSetReady=False reason and message by
+// aggregating the root causes of the not-ready child Workspaces. Failing
+// Workspaces come before progressing ones, each in name order so the result is
+// stable across reconciles. The reason is the first Workspace's root cause
+// reason, so a failing replica is reported even while others progress; the
+// message lists the root causes of up to maxReportedNotReadyWorkspaces
+// Workspaces and counts the other not-ready Workspaces, including those
+// without a root cause yet (e.g. just created).
+func notReadyCondition(workspaces []kaitov1beta1.Workspace, readyReplicas int, desiredReplicas int32) (reason, message string) {
+	reason = "inferencesetNotReady"
+	message = fmt.Sprintf("inferenceset is not ready, %d/%d replicas are ready", readyReplicas, desiredReplicas)
+
+	type rootCause struct {
+		workspace string
+		cond      *metav1.Condition
+		failed    bool
+	}
+	rootCauses := make([]rootCause, 0, len(workspaces))
+	omitted := 0
+	for i := range workspaces {
+		ws := &workspaces[i]
+		if !ws.DeletionTimestamp.IsZero() || controllers.DetermineWorkspacePhase(ws) == "succeeded" {
+			continue
+		}
+		cond, failed := workspaceRootCause(ws)
+		if cond == nil {
+			omitted++
+			continue
+		}
+		rootCauses = append(rootCauses, rootCause{workspace: ws.Name, cond: cond, failed: failed})
+	}
+	sort.Slice(rootCauses, func(i, j int) bool {
+		if rootCauses[i].failed != rootCauses[j].failed {
+			return rootCauses[i].failed
+		}
+		return rootCauses[i].workspace < rootCauses[j].workspace
+	})
+	if len(rootCauses) > maxReportedNotReadyWorkspaces {
+		omitted += len(rootCauses) - maxReportedNotReadyWorkspaces
+		rootCauses = rootCauses[:maxReportedNotReadyWorkspaces]
+	}
+
+	causes := make([]string, 0, len(rootCauses))
+	for i, rc := range rootCauses {
+		if i == 0 {
+			reason = rc.cond.Reason
+		}
+		causes = append(causes, fmt.Sprintf("workspace %s %s=False (%s): %s",
+			rc.workspace, rc.cond.Type, rc.cond.Reason, nodeclaim.FormatProvisioningMessage(rc.cond.Message)))
+	}
+	if len(causes) == 0 {
+		return reason, message
+	}
+	message += "; " + strings.Join(causes, "; ")
+	if omitted > 0 {
+		message += fmt.Sprintf("; and %d more", omitted)
+	}
+	return reason, message
 }
 
 // isWorkspaceOnOldImage reports whether the Workspace's StatefulSet is running a base
@@ -532,8 +673,9 @@ func (c *InferenceSetReconciler) addOrUpdateInferenceSet(ctx context.Context, iO
 			return reconcile.Result{}, err
 		}
 	} else {
+		notReadyReason, notReadyMessage := notReadyCondition(wsList.Items, readyReplicas, desiredReplicas)
 		if err = inferenceset.UpdateStatusConditionIfNotMatch(ctx, c.Client, iObj, kaitov1beta1.InferenceSetConditionTypeReady, metav1.ConditionFalse,
-			"inferencesetNotReady", fmt.Sprintf("inferenceset is not ready, %d/%d replicas are ready", readyReplicas, desiredReplicas)); err != nil {
+			notReadyReason, notReadyMessage); err != nil {
 			klog.ErrorS(err, "failed to update inferenceset status", "inferenceset", klog.KObj(iObj))
 			return reconcile.Result{}, err
 		}
