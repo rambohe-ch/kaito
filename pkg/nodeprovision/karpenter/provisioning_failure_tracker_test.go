@@ -56,8 +56,7 @@ func awaitingLaunch() status.Condition {
 		Reason: "AwaitingReconciliation", Message: "object is awaiting reconciliation"}
 }
 
-// quotaLaunchFailure is what the Azure provider records when a VM create hits
-// the SKU family vCPU quota: Karpenter keeps the NodeClaim and retries.
+// quotaLaunchFailure is what the Azure provider records when a VM create hits the vCPU quota.
 func quotaLaunchFailure() status.Condition {
 	return status.Condition{Type: karpenterv1.ConditionTypeLaunched, Status: metav1.ConditionUnknown,
 		Reason: "CreateInstanceFailed", Message: "creating instance failed, subscription level on-demand vCPU quota for Standard_NC24ads_A100_v4 has been reached"}

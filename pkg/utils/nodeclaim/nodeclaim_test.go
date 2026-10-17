@@ -334,9 +334,7 @@ func TestFirstNodeClaimProvisioningState(t *testing.T) {
 			expectedMessage: "NodeClaim Launched=Unknown",
 		},
 		"initial AwaitingReconciliation state is surfaced as progress": {
-			// Freshly created NodeClaim: operatorpkg initializes conditions to
-			// Unknown/AwaitingReconciliation before launch is attempted. With no
-			// failure present, the earliest pending stage is described.
+			// A fresh NodeClaim is Unknown/AwaitingReconciliation; the earliest pending stage is described.
 			nodeClaims: []*karpenterv1.NodeClaim{
 				nc(
 					status.Condition{Type: karpenterv1.ConditionTypeLaunched, Status: metav1.ConditionUnknown, Reason: "AwaitingReconciliation", Message: "object is awaiting reconciliation"},
@@ -349,8 +347,7 @@ func TestFirstNodeClaimProvisioningState(t *testing.T) {
 			expectedMessage: "NodeClaim Launched=Unknown (AwaitingReconciliation): object is awaiting reconciliation",
 		},
 		"boot progress after launch is surfaced as progress": {
-			// Karpenter keeps registration and initialization Unknown while the
-			// node boots; whatever the reason, that is progress, not a failure.
+			// Registration and initialization stay Unknown while the node boots, which is progress.
 			nodeClaims: []*karpenterv1.NodeClaim{
 				nc(
 					status.Condition{Type: karpenterv1.ConditionTypeLaunched, Status: metav1.ConditionTrue, Reason: "Launched"},
@@ -487,8 +484,7 @@ func TestFirstNodeClaimProvisioningStateTruncatesMessage(t *testing.T) {
 	assert.Equal(t, len(message), maxProvisioningErrorMessageLen+len("..."))
 }
 
-// azureSubnetFullError mimics the text of an azcore.ResponseError wrapped by the
-// Azure Karpenter provider: request line, separator, then the error code and body.
+// azureSubnetFullError mimics an Azure SDK error dump: request line, separator, error code and body.
 const azureSubnetFullError = `PUT https://management.azure.com/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/MC_rg_cluster_eastus/providers/Microsoft.Network/networkInterfaces/aks-default-ws1-abcde
 --------------------------------------------------------------------------------
 RESPONSE 400: 400 Bad Request
@@ -580,13 +576,7 @@ func TestIsConditionTrue(t *testing.T) {
 	assert.Check(t, !IsConditionTrue(nc, karpenterv1.ConditionTypeInitialized))
 }
 
-// TestLifecycleClassificationMatchesUpstream pins how every NodeClaim lifecycle
-// condition state written by Karpenter and its Azure and AWS providers is
-// classified, as enumerated from the sources at the versions in go.mod:
-// sigs.k8s.io/karpenter v1.10.0, github.com/Azure/karpenter-provider-azure
-// v1.10.2 and github.com/aws/karpenter-provider-aws v1.10.0. Re-check the
-// sources when bumping these modules: a new transient Launched reason, like
-// NodeClassReadinessUnknown, must be classified as progress.
+// TestLifecycleClassificationMatchesUpstream pins the lifecycle states of the Karpenter modules in go.mod; re-check them on bumps.
 func TestLifecycleClassificationMatchesUpstream(t *testing.T) {
 	const (
 		launched    = karpenterv1.ConditionTypeLaunched
@@ -621,9 +611,7 @@ func TestLifecycleClassificationMatchesUpstream(t *testing.T) {
 		{"azure cloudprovider.go", launched, unknown, NodeClassReadinessUnknownReason, false},
 		{"azure cloudprovider.go", launched, unknown, "InstanceTypeResolutionFailed", true},
 		{"azure cloudprovider.go", launched, unknown, "CreateInstanceFailed", true},
-		// karpenter-provider-aws pkg/cloudprovider/cloudprovider.go and
-		// pkg/providers/instance/instance.go CreateError reasons; ToReasonMessage
-		// in pkg/errors/errors.go maps EC2 errors to reasons such as these.
+		// karpenter-provider-aws CreateError reasons, mapped from EC2 errors by pkg/errors/errors.go.
 		{"aws cloudprovider.go", launched, unknown, NodeClassReadinessUnknownReason, false},
 		{"aws cloudprovider.go", launched, unknown, "InstanceTypeResolutionFailed", true},
 		{"aws instance.go", launched, unknown, "InstanceTypeFilteringFailed", true},

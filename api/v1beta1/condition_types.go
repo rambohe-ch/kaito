@@ -18,12 +18,7 @@ type ConditionType string
 
 const (
 	// ConditionTypeNodeClaimStatus is the state when checking nodeClaim status.
-	// While False, the reason NodeClaimNotReady means the NodeClaims are still
-	// being provisioned, with the pending lifecycle stage in the message. Any
-	// other reason reports a provisioning failure: the latest attempt failed
-	// (e.g. a cloud quota or capacity error) and the node provisioner keeps
-	// retrying. The failure reasons are not a closed set: they include the
-	// reasons recorded by Karpenter and its cloud provider.
+	// While False, NodeClaimNotReady means provisioning is in progress; any other reason means the latest attempt failed.
 	ConditionTypeNodeClaimStatus = ConditionType("NodeClaimReady")
 
 	// ConditionTypeNodeStatus is the state when checking node status.

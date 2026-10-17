@@ -410,20 +410,13 @@ func IsNodeClaimReadyNotDeleting(nodeClaim *karpenterv1.NodeClaim) bool {
 const maxProvisioningErrorMessageLen = 256
 
 var (
-	// cloudErrorCodePattern matches the error code line of an Azure SDK
-	// ResponseError dump, e.g. "ERROR CODE: SubnetIsFull".
+	// cloudErrorCodePattern matches an Azure SDK error code line, e.g. "ERROR CODE: SubnetIsFull".
 	cloudErrorCodePattern = regexp.MustCompile(`ERROR CODE: (\S+)`)
-	// cloudErrorMessagePattern matches the first JSON "message" field of the
-	// response body that follows the error code.
+	// cloudErrorMessagePattern matches the first JSON "message" field after the error code.
 	cloudErrorMessagePattern = regexp.MustCompile(`"message":\s*"((?:[^"\\]|\\.)*)"`)
 )
 
-// CompactProvisioningMessage moves the error code and cloud message of a verbose
-// cloud API error dump to the front. Azure SDK errors start with the request
-// method and URL (~200 characters) and a separator line before
-// "ERROR CODE: ...", so truncating the raw text drops the actual cause. The
-// first line of the original text is kept as trailing context. Other messages
-// are returned unchanged.
+// CompactProvisioningMessage moves the error code and message of a verbose cloud error dump to the front, so truncation keeps the cause.
 func CompactProvisioningMessage(msg string) string {
 	code := cloudErrorCodePattern.FindStringSubmatch(msg)
 	if code == nil {
@@ -443,8 +436,7 @@ func CompactProvisioningMessage(msg string) string {
 	return compact
 }
 
-// FormatProvisioningMessage compacts and truncates a provisioning error message
-// for a status condition.
+// FormatProvisioningMessage compacts and truncates a provisioning error message for a condition.
 func FormatProvisioningMessage(msg string) string {
 	return utils.TruncateMessage(CompactProvisioningMessage(msg), maxProvisioningErrorMessageLen)
 }
@@ -453,36 +445,20 @@ func FormatProvisioningMessage(msg string) string {
 // core stamps on freshly-initialized conditions; it is not a provisioning error.
 const AwaitingReconciliationReason = "AwaitingReconciliation"
 
-// NodeClassReadinessUnknownReason is the Launched reason the Azure and AWS
-// providers record while the NodeClass is still Ready=Unknown, e.g. right after
-// KAITO created it. It is not a provisioning error.
+// NodeClassReadinessUnknownReason is the Launched reason recorded while the NodeClass is not reconciled yet; it is not an error.
 const NodeClassReadinessUnknownReason = "NodeClassReadinessUnknown"
 
-// NodeClaimNotReadyReason is reported while NodeClaims are still being
-// provisioned and no provisioning failure has been observed.
+// NodeClaimNotReadyReason is reported while NodeClaims are provisioning without an observed failure.
 const NodeClaimNotReadyReason = "NodeClaimNotReady"
 
-// lifecycleStages are the Karpenter NodeClaim lifecycle conditions in the order
-// they are reached; an earlier stage is the root cause of a later one.
+// lifecycleStages are the NodeClaim lifecycle conditions in order; an earlier stage causes a later one.
 var lifecycleStages = []string{
 	karpenterv1.ConditionTypeLaunched,
 	karpenterv1.ConditionTypeRegistered,
 	karpenterv1.ConditionTypeInitialized,
 }
 
-// isLifecycleFailure reports whether a lifecycle condition records a failure
-// rather than progress. It relies on condition semantics rather than on a list
-// of failure reasons:
-//   - Karpenter leaves Launched Unknown with a reason other than
-//     AwaitingReconciliation only when the cloud provider failed to create the
-//     instance (the CreateError reason, or LaunchFailed), except for
-//     NodeClassReadinessUnknown, which waits for the NodeClass;
-//   - it sets a lifecycle condition False only when it cannot proceed
-//     (e.g. Registered=False with MultipleNodesFound);
-//   - registration and initialization in progress stay Unknown, and Karpenter
-//     never sets Initialized to False.
-//
-// A failure means the latest attempt failed; Karpenter keeps retrying.
+// isLifecycleFailure reports a failed latest attempt: a False condition, or Launched=Unknown with a cloud error reason.
 func isLifecycleFailure(c *status.Condition) bool {
 	if c.Status == metav1.ConditionFalse {
 		return true
@@ -511,10 +487,7 @@ func lifecycleCondition(nc *karpenterv1.NodeClaim, conditionType string) *status
 	return nil
 }
 
-// LifecycleFailure returns the earliest-stage provisioning failure recorded on
-// the NodeClaim's lifecycle conditions. It also inspects deleting NodeClaims,
-// because Karpenter deletes NodeClaims that fail to provision and the deleted
-// object is the last place the failure can be observed.
+// LifecycleFailure returns the NodeClaim's earliest-stage failure, also when it is deleting, as failed NodeClaims are deleted.
 func LifecycleFailure(nc *karpenterv1.NodeClaim) (reason, message string, found bool) {
 	if nc == nil {
 		return "", "", false
@@ -539,9 +512,7 @@ func IsConditionTrue(nc *karpenterv1.NodeClaim, conditionType string) bool {
 	return c != nil && c.Status == metav1.ConditionTrue
 }
 
-// NodeClaimProvisioningFailure returns the earliest-stage provisioning failure
-// across the live (non-deleting) NodeClaims, scanning earlier lifecycle stages
-// first because they are the root cause of later ones.
+// NodeClaimProvisioningFailure returns the earliest-stage failure across the live NodeClaims.
 func NodeClaimProvisioningFailure(nodeClaims []*karpenterv1.NodeClaim) (reason, message string, found bool) {
 	for _, stage := range lifecycleStages {
 		for _, nc := range nodeClaims {
@@ -556,9 +527,7 @@ func NodeClaimProvisioningFailure(nodeClaims []*karpenterv1.NodeClaim) (reason, 
 	return "", "", false
 }
 
-// NodeClaimProvisioningProgress describes the earliest-stage lifecycle condition
-// that is not yet True across the live NodeClaims, e.g.
-// "NodeClaim Registered=Unknown (NodeNotFound): Node not registered with cluster".
+// NodeClaimProvisioningProgress describes the earliest-stage lifecycle condition not yet True across the live NodeClaims.
 func NodeClaimProvisioningProgress(nodeClaims []*karpenterv1.NodeClaim) (message string, found bool) {
 	for _, stage := range lifecycleStages {
 		for _, nc := range nodeClaims {
@@ -573,15 +542,13 @@ func NodeClaimProvisioningProgress(nodeClaims []*karpenterv1.NodeClaim) (message
 	return "", false
 }
 
-// ProvisioningFailedReason replaces a failure reason reported by Karpenter, the
-// cloud provider or an Event that is not a valid condition reason.
+// ProvisioningFailedReason replaces a failure reason that is not a valid condition reason.
 const ProvisioningFailedReason = "NodeProvisioningFailed"
 
 // conditionReasonPattern is the metav1.Condition reason format enforced by CRD validation.
 var conditionReasonPattern = regexp.MustCompile(`^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$`)
 
-// ValidConditionReason returns reason if it is a valid metav1.Condition reason,
-// and ProvisioningFailedReason otherwise.
+// ValidConditionReason returns reason if it is a valid condition reason, and ProvisioningFailedReason otherwise.
 func ValidConditionReason(reason string) string {
 	if len(reason) > 1024 || !conditionReasonPattern.MatchString(reason) {
 		return ProvisioningFailedReason
@@ -589,10 +556,7 @@ func ValidConditionReason(reason string) string {
 	return reason
 }
 
-// FirstNodeClaimProvisioningState explains why the live NodeClaims are not
-// ready: a provisioning failure keeps the reason the cloud provider or Karpenter
-// recorded (e.g. CreateInstanceFailed), while progress is reported as
-// NodeClaimNotReady with Karpenter's description of the pending stage.
+// FirstNodeClaimProvisioningState reports a live NodeClaim failure with its own reason, otherwise progress as NodeClaimNotReady.
 func FirstNodeClaimProvisioningState(nodeClaims []*karpenterv1.NodeClaim) (reason, message string, found bool) {
 	if reason, message, found = NodeClaimProvisioningFailure(nodeClaims); found {
 		return ValidConditionReason(reason), message, true

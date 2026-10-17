@@ -36,8 +36,7 @@ import (
 	"github.com/kaito-project/kaito/pkg/utils/nodeclaim"
 )
 
-// azureAllocationFailedError mimics an azcore.ResponseError text wrapped by the
-// Azure provider for a VM create that failed in the long-running operation.
+// azureAllocationFailedError mimics the Azure provider's error for a VM create that failed asynchronously.
 const azureAllocationFailedError = `Failed to register: creating instance failed, PUT https://management.azure.com/subscriptions/0000/resourceGroups/MC_rg/providers/Microsoft.Compute/virtualMachines/aks-default-ws1-abcde
 --------------------------------------------------------------------------------
 RESPONSE 200: 200 OK
@@ -59,8 +58,7 @@ type eventListCounter struct {
 	selectors []string
 }
 
-// newFailureTestClient builds a fake client that supports the Event field
-// selectors used to look up NodeClaim Events, like the API server does.
+// newFailureTestClient builds a fake client supporting the NodeClaim Event field selectors.
 func newFailureTestClient(counter *eventListCounter, objs ...client.Object) client.Client {
 	b := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(objs...).
 		WithIndex(&corev1.Event{}, EventFieldInvolvedObjectUID, func(o client.Object) []string {
@@ -105,8 +103,7 @@ func baseObjects(objs ...client.Object) []client.Object {
 	return append([]client.Object{makeNodeClassUnstructured(testConfig.DefaultName)}, objs...)
 }
 
-// newTrackedProvisioner returns a provisioner tracking the test NodePool, as
-// ProvisionNodes does.
+// newTrackedProvisioner returns a provisioner tracking the test NodePool, as ProvisionNodes does.
 func newTrackedProvisioner(c client.Client) *KarpenterProvisioner {
 	p := NewKarpenterProvisioner(c, testConfig)
 	p.provisioningFailures.track(testPoolName, testPoolUID)
@@ -126,10 +123,7 @@ func nodeClaimCondition(t *testing.T, p *KarpenterProvisioner, targetNodeCount i
 	return byType[string(kaitov1beta1.ConditionTypeNodeClaimStatus)], byType[string(kaitov1beta1.ConditionTypeResourceStatus)]
 }
 
-// Azure SKU family quota: the first attempt records the quota error on the
-// NodeClaim and Karpenter retries; the provider marks the SKU unavailable, so
-// the retry fails with a generic insufficient capacity error and the NodeClaim
-// is deleted. The quota error, the root cause, must be reported.
+// A SKU quota error is reported over the generic insufficient capacity error of the retry it causes.
 func TestProvisioningFailure_QuotaErrorOutranksLaterInsufficientCapacity(t *testing.T) {
 	failing := newWorkspaceNodeClaim("nc-1", testPoolUID, quotaLaunchFailure())
 	replacement := newWorkspaceNodeClaim("nc-2", testPoolUID, awaitingLaunch())
@@ -150,8 +144,7 @@ func TestProvisioningFailure_QuotaErrorOutranksLaterInsufficientCapacity(t *test
 	assert.Zero(t, counter.calls, "no Event lookup once the cloud error is known")
 }
 
-// An exhausted regional quota is only reported as an InsufficientCapacityError
-// Event before Karpenter deletes the NodeClaim.
+// An exhausted regional quota is only reported by an InsufficientCapacityError Event.
 func TestProvisioningFailure_InsufficientCapacityEvent(t *testing.T) {
 	failed := newWorkspaceNodeClaim("nc-1", testPoolUID, awaitingLaunch())
 	replacement := newWorkspaceNodeClaim("nc-2", testPoolUID, awaitingLaunch())
@@ -172,9 +165,7 @@ func TestProvisioningFailure_InsufficientCapacityEvent(t *testing.T) {
 	assert.Equal(t, 1, counter.calls, "the Events of a NodeClaim are not listed again once a failure was found")
 }
 
-// Q31: an instance the Azure provider accepted asynchronously fails after the
-// NodeClaim launched; the provider publishes an AsyncProvisioningError Event
-// and deletes the NodeClaim.
+// An asynchronous Azure failure after launch is reported by an AsyncProvisioningError Event.
 func TestProvisioningFailure_AsynchronousProvisioningError(t *testing.T) {
 	failed := newWorkspaceNodeClaim("nc-1", testPoolUID, launchedOK(), awaitingRegistration())
 	replacement := newWorkspaceNodeClaim("nc-2", testPoolUID, awaitingLaunch())
@@ -191,8 +182,7 @@ func TestProvisioningFailure_AsynchronousProvisioningError(t *testing.T) {
 	assert.True(t, strings.HasPrefix(nodeClaimCond.Message, "AllocationFailed: Allocation failed."), nodeClaimCond.Message)
 }
 
-// Q31: a launched NodeClaim whose node does not register within the timeout is
-// progress until Karpenter deletes it, then a registration failure.
+// A launched NodeClaim whose node does not register is progress until it is deleted.
 func TestProvisioningFailure_RegistrationTimeout(t *testing.T) {
 	booting := newWorkspaceNodeClaim("nc-1", testPoolUID, launchedOK(), awaitingRegistration())
 	p := newTrackedProvisioner(newFailureTestClient(nil, baseObjects(booting)...))
@@ -212,7 +202,7 @@ func TestProvisioningFailure_RegistrationTimeout(t *testing.T) {
 	assert.Equal(t, "NodeClaim nc-1 was deleted after it launched but before its node registered", nodeClaimCond.Message)
 }
 
-// Q31: Karpenter never fails initialization, so a stuck one is progress.
+// Karpenter never fails initialization, so a stuck one is progress.
 func TestProvisioningFailure_InitializationIsProgress(t *testing.T) {
 	initializing := newWorkspaceNodeClaim("nc-1", testPoolUID, launchedOK(), registeredOK(), status.Condition{
 		Type: karpenterv1.ConditionTypeInitialized, Status: metav1.ConditionUnknown, Reason: "ResourceNotRegistered",
@@ -225,8 +215,7 @@ func TestProvisioningFailure_InitializationIsProgress(t *testing.T) {
 	assert.Equal(t, `NodeClaim Initialized=Unknown (ResourceNotRegistered): Resource "nvidia.com/gpu" was requested but not registered`, nodeClaimCond.Message)
 }
 
-// Q31: a failure on a launched live NodeClaim is reported even though the
-// launched NodeClaims cover the target.
+// A failure on a launched live NodeClaim is reported even when launched NodeClaims cover the target.
 func TestProvisioningFailure_LiveFailureOfLaunchedNodeClaim(t *testing.T) {
 	failing := newWorkspaceNodeClaim("nc-1", testPoolUID, launchedOK(), status.Condition{
 		Type: karpenterv1.ConditionTypeRegistered, Status: metav1.ConditionFalse, Reason: "MultipleNodesFound",
@@ -239,8 +228,7 @@ func TestProvisioningFailure_LiveFailureOfLaunchedNodeClaim(t *testing.T) {
 	assert.Equal(t, "Invariant violated, matched multiple nodes", nodeClaimCond.Message)
 }
 
-// Q25: once a replacement launched after a transient failure, the failures of
-// deleted NodeClaims are stale and the replacement's boot is reported.
+// Once a replacement has launched, failures of deleted NodeClaims are stale.
 func TestProvisioningFailure_LaunchedReplacementHidesStaleFailures(t *testing.T) {
 	failed := newWorkspaceNodeClaim("nc-1", testPoolUID, quotaLaunchFailure())
 	booting := newWorkspaceNodeClaim("nc-2", testPoolUID, launchedOK(), awaitingRegistration())

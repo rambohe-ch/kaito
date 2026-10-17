@@ -94,9 +94,7 @@ rules:
   {{- end }}
   - apiGroups: [""]
     resources: ["events"]
-    # get/list let KAITO read the Warning Events Karpenter and its cloud provider
-    # record on deleted NodeClaims (e.g. insufficient capacity or quota,
-    # asynchronous provisioning errors) to surface them in Workspace status.
+    # get/list surface the Warning Events of deleted NodeClaims in Workspace status.
     verbs: ["create", "patch", "update", "get", "list"]
   - apiGroups: [""]
     resources: ["secrets"]

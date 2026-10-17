@@ -85,8 +85,7 @@ func NewKarpenterProvisioner(c client.Client, cfg NodeClassConfig) *KarpenterPro
 	}
 }
 
-// ObserveNodeClaim records NodeClaim provisioning failures so that they remain
-// visible after Karpenter deletes the failed NodeClaims.
+// ObserveNodeClaim records NodeClaim provisioning failures so they outlive the deleted NodeClaims.
 func (p *KarpenterProvisioner) ObserveNodeClaim(oldNC, newNC *karpenterv1.NodeClaim, deleted bool) {
 	p.provisioningFailures.observe(oldNC, newNC, deleted)
 }
@@ -186,15 +185,10 @@ func (p *KarpenterProvisioner) newNodeClassObject(nc NodeClassSpec) *unstructure
 	return obj
 }
 
-// NodeClassNotReadyError reports that a NodeClass is missing or not Ready. It
-// carries the NodeClass's own Ready status and reason/message (e.g. an
-// unresolvable image or an invalid subnet) so the cause is visible on the
-// Workspace.
+// NodeClassNotReadyError reports a missing or not Ready NodeClass with its own Ready reason and message.
 type NodeClassNotReadyError struct {
 	Name string
-	// Status is the NodeClass's Ready status: False when it reports a failure,
-	// Unknown while it has not been reconciled yet, and empty when the
-	// NodeClass does not exist.
+	// Status is the NodeClass's Ready status, or empty when the NodeClass does not exist.
 	Status  metav1.ConditionStatus
 	Reason  string
 	Message string
@@ -207,9 +201,7 @@ func (e *NodeClassNotReadyError) Error() string {
 	return fmt.Sprintf("NodeClass %q is not ready (%s): %s", e.Name, e.Reason, e.Message)
 }
 
-// Failed reports whether the NodeClass is missing or reports Ready=False, as
-// opposed to not being reconciled yet (Ready=Unknown or no Ready condition),
-// e.g. right after KAITO created it.
+// Failed reports whether the NodeClass is missing or Ready=False rather than not reconciled yet.
 func (e *NodeClassNotReadyError) Failed() bool {
 	return e.Status == "" || e.Status == metav1.ConditionFalse
 }
@@ -217,8 +209,7 @@ func (e *NodeClassNotReadyError) Failed() bool {
 // checkNodeClassReady performs a single point-in-time check that the named
 // NodeClass exists and has a Ready=True condition. Unlike waitForNodeClassReady,
 // it does not poll — it returns an error immediately if the resource is missing
-// or not ready. A missing or not-Ready NodeClass is reported as a
-// *NodeClassNotReadyError; API failures are returned as other errors.
+// or not ready, as a *NodeClassNotReadyError unless the API call fails.
 func (p *KarpenterProvisioner) checkNodeClassReady(ctx context.Context, name string) error {
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(schema.GroupVersionKind{
@@ -698,46 +689,22 @@ func (p *KarpenterProvisioner) CollectNodeStatusInfo(ctx context.Context, ws *ka
 }
 
 const (
-	// NodeClaimLaunchFailedReason is reported when a NodeClaim of the workspace
-	// was deleted before it launched and no more specific failure was observed.
+	// NodeClaimLaunchFailedReason reports a NodeClaim deleted before it launched, for an unknown reason.
 	NodeClaimLaunchFailedReason = "NodeClaimLaunchFailed"
-	// NodeClaimRegistrationFailedReason is reported when a NodeClaim of the
-	// workspace launched but was deleted before its node registered and no
-	// more specific failure was observed.
+	// NodeClaimRegistrationFailedReason reports a NodeClaim deleted before its node registered, for an unknown reason.
 	NodeClaimRegistrationFailedReason = "NodeClaimRegistrationFailed"
-	// NodeClassNotReadyReason is reported when the NodeClass the workspace's
-	// NodePool references is missing or reports Ready=False, so Karpenter
-	// cannot launch.
+	// NodeClassNotReadyReason reports a missing or Ready=False NodeClass, which blocks every launch.
 	NodeClassNotReadyReason = "NodeClassNotReady"
 )
 
-// nodeClaimNotReadyCause explains why the workspace does not have enough ready
-// NodeClaims. A failure is reported with the reason recorded by Karpenter, the
-// cloud provider or their Events; anything else is reported as
-// NodeClaimNotReady. In order:
-//  1. the NodeClass is missing or reports Ready=False, which blocks every
-//     launch. A NodeClass that is not reconciled yet is reported as progress.
-//     A Ready NodeClass whose status lags behind a spec change makes the AWS
-//     provider delete NodeClaims without a reason; KAITO never updates the
-//     NodeClasses it creates, so such deletions are reported as
-//     NodeClaimLaunchFailed only after a manual NodeClass change;
-//  2. while the launched NodeClaims do not cover the target, the root cause
-//     tracked for the NodePool (see failureTier), which also covers NodeClaims
-//     Karpenter has deleted since: on insufficient capacity or quota it deletes
-//     the NodeClaim right after the failed launch and the NodePool recreates
-//     it, so the live NodeClaims usually only await launch. Once the launched
-//     NodeClaims cover the target, e.g. a replacement launched after a
-//     transient failure, failures of deleted NodeClaims are stale;
-//  3. a failure recorded on a live NodeClaim, e.g. Registered=False on a
-//     launched one;
-//  4. the live NodeClaims' provisioning progress.
+// nodeClaimNotReadyCause reports, in order: a failed NodeClass; the NodePool's tracked root cause while the launched
+// NodeClaims do not cover the target; a failure on a live NodeClaim; otherwise NodeClaimNotReady with its progress.
 func (p *KarpenterProvisioner) nodeClaimNotReadyCause(ctx context.Context, ws *kaitov1beta1.Workspace, snap *nodeReadinessSnapshot) (reason, message string, found bool) {
 	nodeClaims := snap.allNodeClaims
 	if nodeClassName, err := resolveNodeClassName(ws, p.nodeClassConfig); err == nil {
 		var notReady *NodeClassNotReadyError
 		if err := p.checkNodeClassReady(ctx, nodeClassName); errors.As(err, &notReady) {
-			// The message matches the ProvisionNodes reconcile error, so the
-			// workspace controller does not append it a second time.
+			// Matches the ProvisionNodes reconcile error, so it is not appended twice.
 			if notReady.Failed() {
 				return NodeClassNotReadyReason, notReady.Error(), true
 			}
@@ -770,8 +737,7 @@ func launchedNodeClaimCount(nodeClaims []*karpenterv1.NodeClaim) int {
 	return count
 }
 
-// trackedRootCause returns the root cause tracked for the NodePool, after
-// looking up the Events of its deleted NodeClaims when no cloud error is known.
+// trackedRootCause returns the NodePool's tracked root cause after looking up its deleted NodeClaims' Events.
 func (p *KarpenterProvisioner) trackedRootCause(ctx context.Context, nodePoolName string) (rootCause, bool) {
 	p.lookupProvisioningEvents(ctx, nodePoolName)
 	return p.provisioningFailures.rootCause(nodePoolName)

@@ -27,29 +27,20 @@ import (
 )
 
 const (
-	// nodeClaimEventNamespace is where Events about cluster-scoped objects such
-	// as NodeClaims are recorded.
+	// nodeClaimEventNamespace holds the Events of cluster-scoped objects such as NodeClaims.
 	nodeClaimEventNamespace = metav1.NamespaceDefault
 
-	// EventFieldInvolvedObjectUID and EventFieldType are the Event field
-	// selectors used to list only the Warning Events of a given NodeClaim.
+	// EventFieldInvolvedObjectUID and EventFieldType select a NodeClaim's Warning Events.
 	EventFieldInvolvedObjectUID = "involvedObject.uid"
 	EventFieldType              = "type"
 
-	// asyncProvisioningEventReason is published by the Azure provider when an
-	// instance it accepted asynchronously fails to provision.
+	// asyncProvisioningEventReason is published by the Azure provider when an accepted instance fails.
 	asyncProvisioningEventReason = "AsyncProvisioningError"
-	// insufficientCapacityEventReason is published by Karpenter when the cloud
-	// provider reports insufficient capacity (including most quota errors)
-	// right before it deletes the NodeClaim.
+	// insufficientCapacityEventReason is published by Karpenter (also for most quota errors) before it deletes the NodeClaim.
 	insufficientCapacityEventReason = "InsufficientCapacityError"
 )
 
-// eventTier ranks the provisioning failure Events of a NodeClaim, see
-// failureTier. An asynchronous provisioning error carries the cloud error that
-// made the provider mark the offering unavailable, while an insufficient
-// capacity Event may only be the generic consequence of such a cached failure.
-// Other Events do not explain a provisioning failure.
+// eventTier ranks a NodeClaim Event: an async provisioning error carries the cloud error behind a generic insufficient capacity Event.
 func eventTier(reason string) failureTier {
 	switch reason {
 	case asyncProvisioningEventReason:
@@ -61,10 +52,7 @@ func eventTier(reason string) failureTier {
 	}
 }
 
-// lookupProvisioningEvents looks up the Warning Events of the pool's recently
-// deleted, never-registered NodeClaims and records the most specific one. Only
-// the Warning Events of those NodeClaims are listed, using field selectors, at
-// most once per eventLookupInterval per pool.
+// lookupProvisioningEvents records the most specific Warning Event of the pool's deleted, never-registered NodeClaims, rate-limited per pool.
 func (p *KarpenterProvisioner) lookupProvisioningEvents(ctx context.Context, nodePoolName string) {
 	for _, d := range p.provisioningFailures.eventLookupCandidates(nodePoolName) {
 		events := &corev1.EventList{}
@@ -83,8 +71,7 @@ func (p *KarpenterProvisioner) lookupProvisioningEvents(ctx context.Context, nod
 	}
 }
 
-// provisioningFailureEvent picks the highest-tier provisioning failure Event,
-// the earliest one among Events of the same tier.
+// provisioningFailureEvent picks the highest-tier failure Event, the earliest within a tier.
 func provisioningFailureEvent(events []corev1.Event) (reason, message string, found bool) {
 	var best *corev1.Event
 	for i := range events {

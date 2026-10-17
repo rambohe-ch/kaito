@@ -35,8 +35,7 @@ type nodeClaimEventHandler struct {
 	enqueueHandler handler.TypedEventHandler[client.Object, reconcile.Request]
 	expectations   *utils.ControllerExpectations
 	logger         klog.Logger
-	// observer, when set, sees every NodeClaim change before the workspace is
-	// enqueued, so transient provisioning failures are not missed.
+	// observer, when set, sees every NodeClaim change so transient failures are not missed.
 	observer nodeprovision.NodeClaimObserver
 }
 

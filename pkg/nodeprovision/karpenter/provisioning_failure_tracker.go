@@ -25,37 +25,24 @@ import (
 )
 
 const (
-	// maxPendingEventLookups bounds the deleted NodeClaims whose Events are
-	// looked up per NodePool, and so the Event list calls per lookup.
+	// maxPendingEventLookups bounds the deleted NodeClaims whose Events are looked up per NodePool.
 	maxPendingEventLookups = 3
-	// pendingEventLookupTTL bounds how long the Events of a deleted NodeClaim
-	// are looked for; Events are recorded asynchronously around the deletion.
+	// pendingEventLookupTTL bounds how long a deleted NodeClaim's Events, recorded asynchronously, are looked for.
 	pendingEventLookupTTL = 5 * time.Minute
-	// eventLookupInterval throttles Event lookups per NodePool to limit the
-	// load on the API server: a NodeClaim delete/recreate loop reconciles the
-	// workspace every few seconds.
+	// eventLookupInterval throttles Event lookups per NodePool, as a NodeClaim recreate loop reconciles every few seconds.
 	eventLookupInterval = time.Minute
 )
 
-// failureTier ranks the provisioning failures of a NodePool's NodeClaims by
-// causality: a failure of a higher tier causes the failures of lower tiers, so
-// it is the root cause to report. A missing or not Ready NodeClass, which
-// causes all of them, is checked live and not tracked.
+// failureTier ranks provisioning failures by causality: a higher tier causes the lower ones, so it is the root cause.
 type failureTier int
 
 const (
 	tierNone failureTier = iota
-	// tierDeletedOnly: a NodeClaim was deleted before it launched or before its
-	// node registered, and nothing else is known about why.
+	// tierDeletedOnly: a NodeClaim was deleted before it launched or registered, for an unknown reason.
 	tierDeletedOnly
-	// tierInsufficientCapacity: an InsufficientCapacityError Event. It may be a
-	// root cause (e.g. an exhausted regional quota) or the generic consequence
-	// of an offering the provider marked unavailable after a cloud error.
+	// tierInsufficientCapacity: an InsufficientCapacityError Event, possibly caused by an earlier cloud error.
 	tierInsufficientCapacity
-	// tierCloudError: the original cloud error, recorded on a NodeClaim's
-	// lifecycle conditions (e.g. CreateInstanceFailed) or reported by an
-	// AsyncProvisioningError Event. The providers mark the offering unavailable
-	// on such errors, so later launches fail with insufficient capacity.
+	// tierCloudError: a cloud error on a NodeClaim condition (e.g. CreateInstanceFailed) or an AsyncProvisioningError Event.
 	tierCloudError
 )
 
@@ -73,8 +60,7 @@ type deletedNodeClaim struct {
 	deletedAt time.Time
 }
 
-// nodePoolFailures holds the provisioning failures of a NodePool's NodeClaims
-// since one of them last registered.
+// nodePoolFailures holds a NodePool's provisioning failures since one of its NodeClaims last registered.
 type nodePoolFailures struct {
 	uid               types.UID
 	cause             *rootCause
@@ -82,8 +68,7 @@ type nodePoolFailures struct {
 	lastEventLookupAt time.Time
 }
 
-// record keeps the higher-tier cause; among causes of the same tier the first
-// one is kept, because later attempts often fail with a consequence of it.
+// record keeps the first cause of the highest tier, as later attempts often fail with its consequence.
 func (f *nodePoolFailures) record(c rootCause) {
 	if f.cause == nil || c.tier > f.cause.tier {
 		f.cause = &c
@@ -94,21 +79,8 @@ func (f *nodePoolFailures) needsEventLookup() bool {
 	return f.cause == nil || f.cause.tier < tierCloudError
 }
 
-// provisioningFailureTracker remembers the root cause of NodeClaim provisioning
-// failures per NodePool so it stays visible in the Workspace status after
-// Karpenter or the cloud provider has deleted the failed NodeClaims. It is fed
-// from NodeClaim watch events, which see every transient state, unlike
-// CollectNodeStatusInfo, which only sees the NodeClaims that still exist.
-//
-// A NodePool's entry lives from ProvisionNodes to DeleteNodes; NodeClaim events
-// of a NodePool without an entry, or with another UID, are ignored. So a
-// recreated NodePool does not inherit the failures of its predecessor, and the
-// NodeClaims garbage-collected after the NodePool's deletion leave nothing
-// behind. Entries do not expire: a failure stays relevant until a NodeClaim of
-// the pool registers. The state is kept in memory only: after a controller
-// restart, failures are reported again once they recur, which Karpenter's
-// retries make likely, but a cause from before the restart may be replaced by
-// a less specific one (e.g. a cached quota error by InsufficientCapacityError).
+// provisioningFailureTracker remembers, in memory and per NodePool from ProvisionNodes to DeleteNodes, the root cause
+// of NodeClaim provisioning failures seen by the NodeClaim watch, so it outlives the deleted NodeClaims.
 type provisioningFailureTracker struct {
 	mu    sync.Mutex
 	now   func() time.Time
@@ -147,9 +119,7 @@ func ownedByNodePool(nc *karpenterv1.NodeClaim, uid types.UID) bool {
 	return false
 }
 
-// observe records the provisioning failure of a NodeClaim change. oldNC is the
-// previous state on an update and nil otherwise; deleted is true when newNC is
-// the final state of a deleted NodeClaim.
+// observe records a NodeClaim change; oldNC is nil unless it is an update, and deleted marks the final state.
 func (t *provisioningFailureTracker) observe(oldNC, newNC *karpenterv1.NodeClaim, deleted bool) {
 	if newNC == nil {
 		return
@@ -168,10 +138,7 @@ func (t *provisioningFailureTracker) observe(oldNC, newNC *karpenterv1.NodeClaim
 	}
 
 	if registered {
-		// Registration rather than launch marks recovery, because a launch can
-		// still fail asynchronously. Only the transition counts, so updates of
-		// an already registered NodeClaim do not clear the failures of its
-		// siblings. Deleting a registered NodeClaim is a normal lifecycle event.
+		// Only a new registration clears the failures, as a launch can still fail asynchronously.
 		if !deleted && !wasRegistered {
 			f.cause = nil
 			f.pendingLookups = nil
@@ -206,8 +173,7 @@ func (t *provisioningFailureTracker) observe(oldNC, newNC *karpenterv1.NodeClaim
 	}
 }
 
-// rootCause returns the root cause of the NodePool's provisioning failures since
-// one of its NodeClaims last registered.
+// rootCause returns the NodePool's root cause since one of its NodeClaims last registered.
 func (t *provisioningFailureTracker) rootCause(nodePoolName string) (rootCause, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -218,9 +184,7 @@ func (t *provisioningFailureTracker) rootCause(nodePoolName string) (rootCause, 
 	return *f.cause, true
 }
 
-// eventLookupCandidates returns the recently deleted NodeClaims whose Events
-// should be looked up now, at most once per eventLookupInterval per NodePool,
-// and only while no cloud error is known.
+// eventLookupCandidates returns the deleted NodeClaims whose Events to look up now, while no cloud error is known.
 func (t *provisioningFailureTracker) eventLookupCandidates(nodePoolName string) []deletedNodeClaim {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -243,11 +207,7 @@ func (t *provisioningFailureTracker) eventLookupCandidates(nodePoolName string) 
 	return append([]deletedNodeClaim(nil), f.pendingLookups...)
 }
 
-// recordEventLookup records the result of looking up the Events of a deleted
-// NodeClaim. A found failure Event is recorded and ends the lookups of that
-// NodeClaim; without one, its Events are looked up again later, since they are
-// recorded asynchronously. Results for NodeClaims no longer pending, e.g.
-// because a NodeClaim registered meanwhile, are dropped.
+// recordEventLookup records a found failure Event of a still pending NodeClaim; otherwise its lookup is retried later.
 func (t *provisioningFailureTracker) recordEventLookup(nodePoolName string, d deletedNodeClaim, reason, message string, found bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

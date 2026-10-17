@@ -100,14 +100,8 @@ type NodeProvisioner interface {
 	BuildNodeSelector(ctx context.Context, ws *kaitov1beta1.Workspace) []corev1.NodeSelectorRequirement
 }
 
-// NodeClaimObserver is optionally implemented by a NodeProvisioner that needs to
-// see every NodeClaim change, including transient states that may be gone by the
-// time CollectNodeStatusInfo runs (e.g. a NodeClaim deleted by Karpenter right
-// after a failed launch). The workspace controller calls it from its NodeClaim
-// event handler, so implementations must be cheap and safe for concurrent use.
+// NodeClaimObserver is optionally implemented by a NodeProvisioner to see every NodeClaim change; it must be cheap and concurrency-safe.
 type NodeClaimObserver interface {
-	// ObserveNodeClaim records a NodeClaim change. oldNC is the previous state
-	// on an update and nil otherwise; newNC is the current state, or the final
-	// state of a NodeClaim being removed from the cluster when deleted is true.
+	// ObserveNodeClaim records a NodeClaim change; oldNC is nil unless it is an update, and deleted marks the final state.
 	ObserveNodeClaim(oldNC, newNC *karpenterv1.NodeClaim, deleted bool)
 }
